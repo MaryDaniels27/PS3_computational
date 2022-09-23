@@ -96,4 +96,27 @@ function Initialize_2()
     res2 = Results_2(r, w, b) #initialize our economy's Parameters
 end
 
+#Initializing the population distribution 
+
+mutable struct mu_results
+    mu::Array{Float64, 1}
+end
+
+function Initialize_3()
+    @unpack N, n = prim
+    mu = ones(prim.N,1)
+    for i = 2:N
+        mu[i] = mu[i-1]/(1 + n) #finding the relative sizes of each cohort (accounting for population growth)
+    end
+    mu = mu/sum(mu)  #normalizing mu so that it sums to 1
+    mass = mu_results(mu)
+end
+
+#Making an initial guess of the steady state values of aggregate K and aggregate L with social security
+K0 = 3.1392
+L0 = 0.3496
+
+function Optimize(prim::Primitives, res::Results, res2::Results_2)
+    @unpack 
+
 
