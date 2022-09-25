@@ -1,5 +1,17 @@
 ### PS 3 ###
-using Parameters, Plots
+using Parameters, Plots, Optim
+
+#creating the capital grid which has more density at lower values
+max = 14
+min = 0
+nk = 180
+inc = (max - min)/(nk - 1).^2  #increment
+aux = collect(1:1:nk)
+assets = zeros(length(aux))
+for i = 1:length(aux)
+    assets[i] = min + inc*(aux[i] - 1).^2
+end
+
 
 @with_kw struct Primitives
     N::Float64 = 66 #live span of agents which is also the number of generations in our model
@@ -7,6 +19,8 @@ using Parameters, Plots
     R::Float64 = 46 #Retirement age
     tw::Int64 = 45 #length of your working life
     tR::Int64 = N - (R+1) #length of your retirement
+    r_age::Array{Float64, 1} = collect(R:1:N)
+    w_age::Array{Float64, 2} = collect(1:1:tw)
     θ::Float64 = 0.11 #labor income tax
     γ::Float64 = 0.42 #weight on consumption
     σ::Float64 = 2 #coefficient of relative risk aversion
@@ -60,11 +74,13 @@ using Parameters, Plots
     α::Float64 = 0.36  #capital share of output
     δ::Float64 = 0.06 #depreciation rate
     β::Float64 = 0.97 # discount factor
-    a_grid::Array{Float64, 1} = collect(range(0, length = 180, stop = 14)) #asset grid
+    a_grid::Array{Float64, 1} = assets #asset grid
     na::Int64 = length(a_grid) #length of the asset grid
     nz::Int64 = length(z) #length of productivity vector
 end
 
+
+#Note to self: If you want to see something inside of the primitives struct, type "println(object)" into the struct itself then run the code for the struct
 #Note to self: Array{Float64, 3} tells Julia this is a three dimensional array
 
 mutable struct Results
@@ -112,11 +128,93 @@ function Initialize_3()
     mass = mu_results(mu)
 end
 
-#Making an initial guess of the steady state values of aggregate K and aggregate L with social security
-K0 = 3.1392
-L0 = 0.3496
 
-function Optimize(prim::Primitives, res::Results, res2::Results_2)
-    @unpack 
+#Solving the dynamic programming problem of retirees and workers
+
+function Backwards_Induct(prim::Primitives,res::Results)
+    #First we fill in the values for the retired people
+    for j in reverse(r_age)  #looping over the retirement ages in reverse order
+        println("working on retiree", j)  #Tells us which age we are working on
+        res.val_func[:, :, j] = Bellman(prim, res, res2, j, p) #filling in the value function using the results of the Bellman below
+    end
+    #Now we fill in the values for workers
+    for p in reverse(w_age) #looping over the working ages in reverse order
+        println("working on worker", p) 
+        res.val_func[:, :, p] = Bellman(prim, res, res2, j, p)
+    end
+end
+
+function Bellman(prim::Primitives, res::Results, res2::Results_2, j::Int64, p::Int64)
+    @unpack N, n, R, tw, tR, r_age, w_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
+    @unpack val_func = res
+    @unpack r, w, b = res2
+
+    v_next = zeros(na, nz, N) #filling in the next guess of the value function
+    
+    #Solving the problem of retirees
+    if j == N
+        for a_index = 1:na, z_index = 1:nz #looping over assets and states
+            c_N = (1 + r)a_grid[a_index] + b    #last period consumption
+            val_N = (c_N^((1-σ)γ))/(1-σ)          #last period utility
+            res.val_func[a_index, z_index, j] = val_N #storing last period utility in the value function
+            res.pol_func[a_index, z_index, j] = 0.0
+        end
+    end 
+    elseif j!=N
+        for a_index = 1:na, z_index = 1:nz  #looping over assets today
+            obj(ap_index) = -obj_func(prim, res2, ap_index)
+            opt = optimize(obj, 0.0, 14.0)  #The boundaries on a' are 0 and 14 from the capital grid
+            v_next[a_index, z_index, j] = -opt.minimum  #fill in the maximum value 
+            res.pol_func[a_index, z_index, j] = opt.minimizer  #fill in the choice of a' that gives the maximum value
+        end
+    end
+
+    #Solving the problem of the working age people
+    for a_index = 1:na, z_index = 1:nz  #looping over assets today
+        obj_2(ap_index) = -obj_func_2(prim, res2, ap_index)
+        opt_2 = optimize(obj_2, 0.0, 14.0)  #The boundaries on a' are 0 and 14 from the capital grid
+        v_next[a_index, z_index, p] = -opt.minimum  #fill in the maximum value 
+        res.pol_func[a_index, z_index, p] = opt.minimizer  #fill in the choice of a' that gives the maximum value
+    end
+
+end
+
+
+#Objective function
+
+function obj_func(prim::Primitives, res2::Results_2, ap_index::Float64)
+    @unpack N, n, R, tw, tR, r_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
+    @unpack r, w, b = res2
+    for a_index = 1:na  #looping over assets today
+        a = a_grid[a_index] #setting the value of a
+        budget = (1 + r)a + b 
+        for ap_index = 1:na #looping over assets tomorrow
+            c = budget - a_grid[ap_index] #consumption given a' selection
+            if c>0  #check for positivity
+                val = (c^((1-σ)γ))/(1-σ) + β * v_next[ap_index, :, i+1] #calculate the value function
+            end
+        end
+    end
+end
+
+function obj_func(prim::Primitives, res2::Results_2, ap_index::Float64)
+    @unpack N, n, R, tw, tR, r_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
+    @unpack r, w, b = res2
+    for a_index = 1:na  #looping over assets today
+        a = a_grid[a_index] #setting the value of a
+        budget = (1 + r)a + b 
+        for ap_index = 1:na #looping over assets tomorrow
+            c = budget - a_grid[ap_index] #consumption given a' selection
+            if c>0  #check for positivity
+                val = (c^((1-σ)γ))/(1-σ)  #calculate the value function
+            end
+        end
+    end
+end
+
+
+
+
+
 
 
