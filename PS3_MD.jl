@@ -1,15 +1,15 @@
 ### PS 3 ###
-using Parameters, Plots, Optim
+using Parameters, Plots
 
 #creating the capital grid which has more density at lower values
-max = 14
-min = 0
+i_max = 14
+i_min = 0
 nk = 180
-inc = (max - min)/(nk - 1).^2  #increment
+inc = (i_max - i_min)/(nk - 1).^2  #increment
 aux = collect(1:1:nk)
 assets = zeros(length(aux))
 for i = 1:length(aux)
-    assets[i] = min + inc*(aux[i] - 1).^2
+    assets[i] = i_min + inc*(aux[i] - 1).^2
 end
 
 
@@ -100,7 +100,7 @@ function Initialize()
     prim = Primitives() #initialize primtiives
     val_func = zeros(prim.na, prim.nz, prim.N) #initial value function guess
     pol_func = zeros(prim.na, prim.nz, prim.N) #initial policy function for asset guess
-    labor = zeros(prim,na, prim.nz, prim.N) #inital guess of the optimal labor supply
+    labor = zeros(prim,na, prim.nz, prim.tw) #inital guess of the optimal labor supply
     res = Results(val_func, pol_func, labor) #initialize results struct
     prim, res #return deliverables
 end
@@ -131,86 +131,75 @@ end
 
 #Solving the dynamic programming problem of retirees and workers
 
-function Backwards_Induct(prim::Primitives,res::Results)
-    #First we fill in the values for the retired people
-    for j in reverse(r_age)  #looping over the retirement ages in reverse order
-        println("working on retiree", j)  #Tells us which age we are working on
-        res.val_func[:, :, j] = Bellman(prim, res, res2, j, p) #filling in the value function using the results of the Bellman below
-    end
-    #Now we fill in the values for workers
-    for p in reverse(w_age) #looping over the working ages in reverse order
-        println("working on worker", p) 
-        res.val_func[:, :, p] = Bellman(prim, res, res2, j, p)
-    end
-end
-
 function Bellman(prim::Primitives, res::Results, res2::Results_2, j::Int64, p::Int64)
     @unpack N, n, R, tw, tR, r_age, w_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
     @unpack val_func = res
     @unpack r, w, b = res2
-
-    v_next = zeros(na, nz, N) #filling in the next guess of the value function
     
     #Solving the problem of retirees
-    if j == N
-        for a_index = 1:na, z_index = 1:nz #looping over assets and states
-            c_N = (1 + r)a_grid[a_index] + b    #last period consumption
-            val_N = (c_N^((1-σ)γ))/(1-σ)          #last period utility
-            res.val_func[a_index, z_index, j] = val_N #storing last period utility in the value function
-            res.pol_func[a_index, z_index, j] = 0.0
-        end
-    end 
-    elseif j!=N
-        for a_index = 1:na, z_index = 1:nz  #looping over assets today
-            obj(ap_index) = -obj_func(prim, res2, ap_index)
-            opt = optimize(obj, 0.0, 14.0)  #The boundaries on a' are 0 and 14 from the capital grid
-            v_next[a_index, z_index, j] = -opt.minimum  #fill in the maximum value 
-            res.pol_func[a_index, z_index, j] = opt.minimizer  #fill in the choice of a' that gives the maximum value
+    for a_index = 1:na, z_index = 1:nz #looping over assets and states
+        c_N = (1 + r)a_grid[a_index] + b    #last period consumption
+        val_N = (c_N^((1-σ)γ))/(1-σ)          #last period utility
+        res.val_func[a_index, z_index, N] = val_N #storing last period utility in the value function
+        res.pol_func[a_index, z_index, N] = 0.0 #storing the last period policy function
+    end
+    for j = N-1:-1:R
+        for a_index = 1:na  #looping over assets today
+            a = a_grid[a_index] #setting the value of a
+            candidate_max = -Inf  #initial guess of candidate max
+            budget = (1 + r)a + b #calculate the budget
+            for ap_index = 1:na #looping over assets tomorrow
+                c = budget - a_grid[ap_index] #consumption given a' selection
+                if c>0  #check for positivity
+                    val = (c^((1-σ)γ))/(1-σ) + β * val_func[ap_index, 1, j+1] #calculate the value function while looking at next period's value function
+                    if val > candidate_max
+                        candidate_max = val  #if our value function association with a' is greater than the current candidate max, update candidate max 
+                        #to be equal to val. Then repeat the process for the next value of a' and update candidate max if this value of a' yields a higher
+                        #value function. If the next value of a' does not yield a higher val, then candidate max will not update and we will just be left with
+                        #the candidate max from before.
+                        res.pol_func[a_index, :, j] = a_grid[ap_index] #update the policy function
+                        res.val_func[a_index, :, j] = val  #updating the value function
+                    end
+                end
+            end
         end
     end
 
     #Solving the problem of the working age people
-    for a_index = 1:na, z_index = 1:nz  #looping over assets today
-        obj_2(ap_index) = -obj_func_2(prim, res2, ap_index)
-        opt_2 = optimize(obj_2, 0.0, 14.0)  #The boundaries on a' are 0 and 14 from the capital grid
-        v_next[a_index, z_index, p] = -opt.minimum  #fill in the maximum value 
-        res.pol_func[a_index, z_index, p] = opt.minimizer  #fill in the choice of a' that gives the maximum value
-    end
-
-end
-
-
-#Objective function
-
-function obj_func(prim::Primitives, res2::Results_2, ap_index::Float64)
-    @unpack N, n, R, tw, tR, r_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
-    @unpack r, w, b = res2
-    for a_index = 1:na  #looping over assets today
-        a = a_grid[a_index] #setting the value of a
-        budget = (1 + r)a + b 
-        for ap_index = 1:na #looping over assets tomorrow
-            c = budget - a_grid[ap_index] #consumption given a' selection
-            if c>0  #check for positivity
-                val = (c^((1-σ)γ))/(1-σ) + β * v_next[ap_index, :, i+1] #calculate the value function
+    for i = tw:-1:1
+        for a_index = 1:na  #looping over assets today
+            a = a_grid[a_index] #setting the value of a
+            candidate_max = -Inf  #initial guess of candidate max
+            for z_index = 1:nz #looping for productivity states
+                z = z[z_index]
+                for ap_index = 1:na #looping over assets tomorrow
+                    l = (γ(1-θ)(z[z_index] * η[i])*w - (1-γ)((1+r)a_grid[a_index] - a_grid[ap_index]))  #for a given combination (z, a, a'), this is the 
+                    #optimal labor supply
+                    if l > 1  #this if, else loop ensures that labor supply is bounded between 0 and 1
+                        l = 1
+                    elseif l < 0
+                        l = 0
+                    end
+                    candidate_max2 = -Inf
+                    budget2 = w*(1-θ)(z * η[i])*l + (1 + r)a#calculate the budget
+                    c2 = budget2 - a_grid[ap_index] #consumption given a' selection
+                        if c2>0  #check for positivity
+                            val2 = ((c2^γ * (1-l)^(1-γ))^(1-σ))/(1-σ) + β * sum(val_func[ap_index, :, i+1].* markov[z_index, :]) #calculate the value 
+                            #function while looking at next period's value function
+                                if val2 > candidate_max2
+                                    candidate_max2 = val2  #update candidate max
+                                    res.pol_func[a_index, z_index, i] = a_grid[ap_index] #update the policy function
+                                    res.val_func[a_index, z_index, i] = val2  #updating the value function
+                                    res.labor[a_index, z_index, i] = l  #updating the optimal labor supply vector 
+                                end
+                        end
+                end
             end
         end
     end
+
 end
 
-function obj_func(prim::Primitives, res2::Results_2, ap_index::Float64)
-    @unpack N, n, R, tw, tR, r_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
-    @unpack r, w, b = res2
-    for a_index = 1:na  #looping over assets today
-        a = a_grid[a_index] #setting the value of a
-        budget = (1 + r)a + b 
-        for ap_index = 1:na #looping over assets tomorrow
-            c = budget - a_grid[ap_index] #consumption given a' selection
-            if c>0  #check for positivity
-                val = (c^((1-σ)γ))/(1-σ)  #calculate the value function
-            end
-        end
-    end
-end
 
 
 
