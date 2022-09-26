@@ -1,5 +1,4 @@
 ### PS 3 ###
-using Parameters, Plots
 
 #creating the capital grid which has more density at lower values
 i_max = 14
@@ -11,16 +10,14 @@ assets = zeros(length(aux))
 for i = 1:length(aux)
     assets[i] = i_min + inc*(aux[i] - 1).^2
 end
-
+assets
 
 @with_kw struct Primitives
-    N::Float64 = 66 #live span of agents which is also the number of generations in our model
+    N::Int64 = 66 #live span of agents which is also the number of generations in our model
     n::Float64 = 0.011 #population growth rate 
-    R::Float64 = 46 #Retirement age
+    R::Int64 = 46 #Retirement age
     tw::Int64 = 45 #length of your working life
     tR::Int64 = N - (R+1) #length of your retirement
-    r_age::Array{Float64, 1} = collect(R:1:N)
-    w_age::Array{Float64, 2} = collect(1:1:tw)
     θ::Float64 = 0.11 #labor income tax
     γ::Float64 = 0.42 #weight on consumption
     σ::Float64 = 2 #coefficient of relative risk aversion
@@ -93,72 +90,81 @@ mutable struct Results_2
     r::Float64 #interest rate
     w::Float64 #wage rate
     b::Float64  #social security benefit
+    K_0::Float64 #aggregate capital
+    L_0::Float64 #aggregate labor
 end
 
 
 function Initialize()
     prim = Primitives() #initialize primtiives
-    val_func = zeros(prim.na, prim.nz, prim.N) #initial value function guess
-    pol_func = zeros(prim.na, prim.nz, prim.N) #initial policy function for asset guess
-    labor = zeros(prim,na, prim.nz, prim.tw) #inital guess of the optimal labor supply
+    val_func = zeros(prim.na, prim.nz, 66) #initial value function guess
+    pol_func = zeros(prim.na, prim.nz, 66) #initial policy function for asset guess
+    labor = zeros(prim.na, prim.nz, prim.tw) #inital guess of the optimal labor supply
     res = Results(val_func, pol_func, labor) #initialize results struct
     prim, res #return deliverables
-end
-
-function Initialize_2()
-    r = 0.05 #initial guess of the interest rate
-    w = 1.05 #initial guess of the wage rate
-    b = 0.2 #initial guess of social security benefit
-    res2 = Results_2(r, w, b) #initialize our economy's Parameters
 end
 
 #Initializing the population distribution 
 
 mutable struct mu_results
-    mu::Array{Float64, 1}
+    mu::Array{Float64, 2}
 end
 
 function Initialize_3()
     @unpack N, n = prim
-    mu = ones(prim.N,1)
+    mu = ones(prim.N,2)
     for i = 2:N
-        mu[i] = mu[i-1]/(1 + n) #finding the relative sizes of each cohort (accounting for population growth)
+        mu[i, :] = mu[i-1, :]/(1 + n) #finding the relative sizes of each cohort (accounting for population growth)
     end
     mu = mu/sum(mu)  #normalizing mu so that it sums to 1
     mass = mu_results(mu)
 end
 
+#solving for r, w and b
+function Initialize_2()
+    @unpack α, R, δ, θ, N = prim
+    @unpack mu = mass
+    K_0 = 3.63  #initial guess of capital
+    L_0 = 0.43  #initial guess of labor
+    #Using the firm's FOC, we can solve for r and w
+    w = (1-α)*L_0^(-α)*K_0^α  #wage rate
+    r_k = α*K_0^(α - 1)*L_0^(1-α)  #the firm's interest rate
+    r = r_k - δ  #the household's interest rate which is the firm's interest rate adjusted for depreciation
+    #Using the government budget constraint, we can solve for b
+    b = (θ*w*L_0)/(sum(mu[R:N]))
+    res2 = Results_2(r, w, b, K_0, L_0) #initialize our economy's Parameters
+end
 
 #Solving the dynamic programming problem of retirees and workers
 
-function Bellman(prim::Primitives, res::Results, res2::Results_2, j::Int64, p::Int64)
-    @unpack N, n, R, tw, tR, r_age, w_age, θ, γ, σ, η, z, markov, α, δ, β, a_grid, na, nz = prim
+function Bellman(prim::Primitives, res::Results, res2::Results_2)
+    @unpack N, R, tw, θ, γ, σ, η, z, markov, β, a_grid, na, nz = prim
     @unpack val_func = res
     @unpack r, w, b = res2
     
     #Solving the problem of retirees
     for a_index = 1:na, z_index = 1:nz #looping over assets and states
-        c_N = (1 + r)a_grid[a_index] + b    #last period consumption
-        val_N = (c_N^((1-σ)γ))/(1-σ)          #last period utility
-        res.val_func[a_index, z_index, N] = val_N #storing last period utility in the value function
-        res.pol_func[a_index, z_index, N] = 0.0 #storing the last period policy function
+        c_N = (1 + r)*a_grid[a_index] + b    #last period consumption
+        val_N = (c_N^((1-σ)*γ))/(1-σ)          #last period utility
+        res.val_func[a_index, z_index, 66] = val_N #storing last period utility in the value function
+        res.pol_func[a_index, z_index, 66] = 0.0 #storing the last period policy function
     end
-    for j = N-1:-1:R
-        for a_index = 1:na  #looping over assets today
+    for j = (N-1):-1:R
+        for a_index = 1:na, z_index = 1:nz  #looping over assets today
             a = a_grid[a_index] #setting the value of a
             candidate_max = -Inf  #initial guess of candidate max
             budget = (1 + r)a + b #calculate the budget
             for ap_index = 1:na #looping over assets tomorrow
                 c = budget - a_grid[ap_index] #consumption given a' selection
                 if c>0  #check for positivity
-                    val = (c^((1-σ)γ))/(1-σ) + β * val_func[ap_index, 1, j+1] #calculate the value function while looking at next period's value function
+                    val = (c^((1-σ)γ))/(1-σ) + β * res.val_func[ap_index, z_index, (j+1)] #calculate the value function while looking at next period's value function
                     if val > candidate_max
                         candidate_max = val  #if our value function association with a' is greater than the current candidate max, update candidate max 
                         #to be equal to val. Then repeat the process for the next value of a' and update candidate max if this value of a' yields a higher
                         #value function. If the next value of a' does not yield a higher val, then candidate max will not update and we will just be left with
                         #the candidate max from before.
-                        res.pol_func[a_index, :, j] = a_grid[ap_index] #update the policy function
-                        res.val_func[a_index, :, j] = val  #updating the value function
+                        res.pol_func[a_index, z_index, j] = a_grid[ap_index] #update the policy function
+                        res.val_func[a_index, z_index, j] = val  #updating the value function
                     end
                 end
             end
@@ -171,9 +177,8 @@ function Bellman(prim::Primitives, res::Results, res2::Results_2, j::Int64, p::I
             a = a_grid[a_index] #setting the value of a
             candidate_max = -Inf  #initial guess of candidate max
             for z_index = 1:nz #looping for productivity states
-                z = z[z_index]
                 for ap_index = 1:na #looping over assets tomorrow
-                    l = (γ(1-θ)(z[z_index] * η[i])*w - (1-γ)((1+r)a_grid[a_index] - a_grid[ap_index]))  #for a given combination (z, a, a'), this is the 
+                    l = (γ*(1-θ)*(z[z_index] * η[i])*w - (1-γ)*((1+r)*a_grid[a_index] - a_grid[ap_index]))  #for a given combination (z, a, a'), this is the 
                     #optimal labor supply
                     if l > 1  #this if, else loop ensures that labor supply is bounded between 0 and 1
                         l = 1
@@ -181,10 +186,10 @@ function Bellman(prim::Primitives, res::Results, res2::Results_2, j::Int64, p::I
                         l = 0
                     end
                     candidate_max2 = -Inf
-                    budget2 = w*(1-θ)(z * η[i])*l + (1 + r)a#calculate the budget
+                    budget2 = w*(1-θ)*(z[z_index] * η[i])*l + (1 + r)*a#calculate the budget
                     c2 = budget2 - a_grid[ap_index] #consumption given a' selection
                         if c2>0  #check for positivity
-                            val2 = ((c2^γ * (1-l)^(1-γ))^(1-σ))/(1-σ) + β * sum(val_func[ap_index, :, i+1].* markov[z_index, :]) #calculate the value 
+                            val2 = ((c2^γ * (1-l)^(1-γ))^(1-σ))/(1-σ) + β * sum(res.val_func[ap_index, :, i+1].* markov[z_index, :]) #calculate the value 
                             #function while looking at next period's value function
                                 if val2 > candidate_max2
                                     candidate_max2 = val2  #update candidate max
@@ -197,13 +202,10 @@ function Bellman(prim::Primitives, res::Results, res2::Results_2, j::Int64, p::I
             end
         end
     end
-
 end
 
 
-
-
-
+#Savings rate is just equal to the policy function for a'
 
 
 
