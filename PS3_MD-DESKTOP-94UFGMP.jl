@@ -90,8 +90,6 @@ mutable struct Results_2
     r::Float64 #interest rate
     w::Float64 #wage rate
     b::Float64  #social security benefit
-    K_0::Float64 #aggregate capital
-    L_0::Float64 #aggregate labor
 end
 
 
@@ -104,38 +102,29 @@ function Initialize()
     prim, res #return deliverables
 end
 
+function Initialize_2()
+    r = 0.05 #initial guess of the interest rate
+    w = 1.05 #initial guess of the wage rate
+    b = 0.2 #initial guess of social security benefit
+    res2 = Results_2(r, w, b) #initialize our economy's Parameters
+end
+
 #Initializing the population distribution 
 
 mutable struct mu_results
     mu::Array{Float64, 1}
-    mu_dist::Array{Float64, 3}
 end
 
 function Initialize_3()
-    @unpack N, n, na, nz = prim
-    mu_dist = zeros(prim.na, prim.nz, prim.N)
-    mu = ones(prim.N)
+    @unpack N, n = prim
+    mu = ones(prim.N,1)
     for i = 2:N
         mu[i] = mu[i-1]/(1 + n) #finding the relative sizes of each cohort (accounting for population growth)
     end
     mu = mu/sum(mu)  #normalizing mu so that it sums to 1
-    mass = mu_results(mu, mu_dist)
+    mass = mu_results(mu)
 end
 
-#solving for r, w and b
-function Initialize_2()
-    @unpack α, R, δ, θ, N = prim
-    @unpack mu = mass
-    K_0 = 3.63  #initial guess of capital
-    L_0 = 0.43  #initial guess of labor
-    #Using the firm's FOC, we can solve for r and w
-    w = (1-α)*L_0^(-α)*K_0^α  #wage rate
-    r_k = α*K_0^(α - 1)*L_0^(1-α)  #the firm's interest rate
-    r = r_k - δ  #the household's interest rate which is the firm's interest rate adjusted for depreciation
-    #Using the government budget constraint, we can solve for b
-    b = (θ*w*L_0)/(sum(mu[R:N]))
-    res2 = Results_2(r, w, b, K_0, L_0) #initialize our economy's Parameters
-end
 
 #Solving the dynamic programming problem of retirees and workers
 
@@ -177,25 +166,26 @@ function Bellman(prim::Primitives, res::Results, res2::Results_2)
     for i = tw:-1:1
         for a_index = 1:na  #looping over assets today
             a = a_grid[a_index] #setting the value of a
+            candidate_max = -Inf  #initial guess of candidate max
             for z_index = 1:nz #looping for productivity states
                 for ap_index = 1:na #looping over assets tomorrow
-                    l = (γ*(1-θ)*(z[z_index] * η[i])*w - (1-γ)*((1+r)*a_grid[a_index] - a_grid[ap_index]))./((1-θ)*w*(z[z_index] * η[i]))  #for a given combination (z, a, a'), this is the 
+                    l = (γ*(1-θ)*(z[z_index] * η[i])*w - (1-γ)*((1+r)*a_grid[a_index] - a_grid[ap_index]))  #for a given combination (z, a, a'), this is the 
                     #optimal labor supply
                     if l > 1  #this if, else loop ensures that labor supply is bounded between 0 and 1
                         l = 1
                     elseif l < 0
                         l = 0
                     end
-                    budget = w*(1-θ)*(z[z_index] * η[i])*l + (1 + r)*a  #calculate the budget
-                    candidate_max = -Inf  #initial guess of candidate max
-                    c = budget - a_grid[ap_index] #consumption given a' selection
-                        if c>0  #check for positivity
-                            val = ((c^γ * (1-l)^(1-γ))^(1-σ))/(1-σ) + β * sum(res.val_func[ap_index, :, i+1].* markov[z_index, :]) #calculate the value 
+                    candidate_max2 = -Inf
+                    budget2 = w*(1-θ)*(z[z_index] * η[i])*l + (1 + r)*a#calculate the budget
+                    c2 = budget2 - a_grid[ap_index] #consumption given a' selection
+                        if c2>0  #check for positivity
+                            val2 = ((c2^γ * (1-l)^(1-γ))^(1-σ))/(1-σ) + β * sum(res.val_func[ap_index, :, i+1].* markov[z_index, :]) #calculate the value 
                             #function while looking at next period's value function
-                                if val > candidate_max
-                                    candidate_max = val  #update candidate max
+                                if val2 > candidate_max2
+                                    candidate_max2 = val2  #update candidate max
                                     res.pol_func[a_index, z_index, i] = a_grid[ap_index] #update the policy function
-                                    res.val_func[a_index, z_index, i] = val  #updating the value function
+                                    res.val_func[a_index, z_index, i] = val2  #updating the value function
                                     res.labor[a_index, z_index, i] = l  #updating the optimal labor supply vector 
                                 end
                         end
@@ -205,57 +195,9 @@ function Bellman(prim::Primitives, res::Results, res2::Results_2)
     end
 end
 
-function Distribution(prim::Primitives, res::Results, res2::Results_2, mass::mu_results)
-    @unpack N, R, tw, z, a_grid, na, nz, markov = prim
-    @unpack pol_func = res
-    @unpack mu, mu_dist = mass
-    mass.mu_dist[1, 1, 1] = 0.2037  #initial mass of high productivity people
-    mass.mu_dist[1, 2, 1] = 0.7963   #initial mass of low productivity people
-    mu1 = zeros(prim.na, prim.nz, prim.N)   #final distribution
-    mu1[1, 1, 1] = 0.2037
-    mu1[1, 2, 1] = 0.7963
-    #population the mass for generation j = 2
-    for ap = 1:na  #looing over asset states for j=2
-        index = findall(x-> x == a_grid[ap], pol_func[:, 1, 1]) # find all of the people from j = 1 who have high productivity and will hold a' in j=2
-        h_h = 0 #from high state to high state
-        l_h = 0 #mass of people going from high productivity to the low productivity
-        for i = 1:length(index)  #loop over the people identified to hold a' in j=2
-            h_h = h_h + 0.9261*mu1[index[i],1, 1] #go to the j = 1 distribution, find the mass point of the people who have z = high and 
-            #calculate the probability they will be in the high state tomorrow
-            l_h = l_h + 0.0739*mu1[index[i], 1, 1] #probability people at (a, z_h, 1) will be at (a', z_l, 2) tomorrow
-        end
 
-        index2 = findall(x-> x == a_grid[ap], pol_func[:, 2, 1])  #now we are only looking at people who are in the low state today
-        h_l = 0  #going from low to high
-        l_l = 0 #going from low to low
-        for i = 1:length(index2)
-            h_l = h_l + mu1[index2[i], 2, 1]  
-            l_l = l_l + mu1[index2[i], 2, 1]
-        end
-        mu1[ap, 1, 2] = h_h + h_l  #the mass of people with a' and z' = high at j = 2
-        mu1[ap, 2, 2] = l_h + l_l  #mass of people with a' and z' = low at j=2
-    end
-    for j = 3:N   #looping over the ages
-        for z_index = 1:nz  #looing over the productivity states
-            for a_index = 1:na  #looping over the asset grid, holding z constant 
-                index = findall(res.pol_func[:, z_index, j-1] .== a_grid[a_index])  #go to the policy function for generation j-1, go to 
-                #productivity state z, then find all the people from various inital asset holdings with current productivity z that are suppose 
-                #to have asset holding a' tomorrow
-                for zp = 1:nz  #looping over productivity states for tomorrow z'
-                    mu1[a_index, z_index, j] = sum(mu1[index, zp, j-1] * markov[zp, z_index]) #to populate the mass at (a, z, j) today, we 
-                    #look at last period's distribution. For each mass of people with a today that should hold a' tomorrow, we find the probability they will hold a'
-                    #in the high productivity state tomorrow z' then we multiply the mass by π_j'j and populate our mass for generation j. To be clear, generation j 
-                    #represents tomorrow while generation j-1 is today.
-                end
-            end
-        end
-    end
-    mass.mu_dist = mu1
-    return mu1
-    #now we need to weigh each generation by the relative size of their cohort
-end
-
-
+#Savings rate
+savings = res.pol_func .- a_grid
 
 
 
