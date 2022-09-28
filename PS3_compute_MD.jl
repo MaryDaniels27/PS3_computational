@@ -6,7 +6,7 @@ prim, res = Initialize() #initialize primitive and results structs
 mass = Initialize_3()    #initialize the population distribution
 res2 = Initialize_2()    #initialize r, w, b
 @elapsed Bellman(prim, res, res2) #solve the Bellman!
-Distribution(prim, res, res2, mass)
+include("PS3_distribution_MD.jl")  #solve for the stationary distribution
 @unpack val_func, pol_func, labor = res
 @unpack a_grid = prim
 @unpack mu, mu_dist, mu1 = mass
