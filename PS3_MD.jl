@@ -109,17 +109,19 @@ end
 mutable struct mu_results
     mu::Array{Float64, 1}
     mu_dist::Array{Float64, 3}
+    mu1::Array{Float64, 3}
 end
 
 function Initialize_3()
     @unpack N, n, na, nz = prim
-    mu_dist = zeros(prim.na, prim.nz, prim.N)
+    mu_dist = zeros(prim.na, prim.nz, prim.N) #this will hold our unweighted distribution
+    mu1 = zeros(prim.na, prim.nz, prim.N)  #this will hol our final, properly weight distribution
     mu = ones(prim.N)
     for i = 2:N
         mu[i] = mu[i-1]/(1 + n) #finding the relative sizes of each cohort (accounting for population growth)
     end
     mu = mu/sum(mu)  #normalizing mu so that it sums to 1
-    mass = mu_results(mu, mu_dist)
+    mass = mu_results(mu, mu_distm mu1)
 end
 
 #solving for r, w and b
@@ -208,51 +210,29 @@ end
 function Distribution(prim::Primitives, res::Results, res2::Results_2, mass::mu_results)
     @unpack N, R, tw, z, a_grid, na, nz, markov = prim
     @unpack pol_func = res
-    @unpack mu, mu_dist = mass
-    mass.mu_dist[1, 1, 1] = 0.2037  #initial mass of high productivity people
-    mass.mu_dist[1, 2, 1] = 0.7963   #initial mass of low productivity people
-    mu1 = zeros(prim.na, prim.nz, prim.N)   #final distribution
-    mu1[1, 1, 1] = 0.2037
-    mu1[1, 2, 1] = 0.7963
-    #population the mass for generation j = 2
-    for ap = 1:na  #looing over asset states for j=2
-        index = findall(x-> x == a_grid[ap], pol_func[:, 1, 1]) # find all of the people from j = 1 who have high productivity and will hold a' in j=2
-        h_h = 0 #from high state to high state
-        l_h = 0 #mass of people going from high productivity to the low productivity
-        for i = 1:length(index)  #loop over the people identified to hold a' in j=2
-            h_h = h_h + 0.9261*mu1[index[i],1, 1] #go to the j = 1 distribution, find the mass point of the people who have z = high and 
-            #calculate the probability they will be in the high state tomorrow
-            l_h = l_h + 0.0739*mu1[index[i], 1, 1] #probability people at (a, z_h, 1) will be at (a', z_l, 2) tomorrow
-        end
-
-        index2 = findall(x-> x == a_grid[ap], pol_func[:, 2, 1])  #now we are only looking at people who are in the low state today
-        h_l = 0  #going from low to high
-        l_l = 0 #going from low to low
-        for i = 1:length(index2)
-            h_l = h_l + mu1[index2[i], 2, 1]  
-            l_l = l_l + mu1[index2[i], 2, 1]
-        end
-        mu1[ap, 1, 2] = h_h + h_l  #the mass of people with a' and z' = high at j = 2
-        mu1[ap, 2, 2] = l_h + l_l  #mass of people with a' and z' = low at j=2
-    end
-    for j = 3:N   #looping over the ages
-        for z_index = 1:nz  #looing over the productivity states
-            for a_index = 1:na  #looping over the asset grid, holding z constant 
-                index = findall(res.pol_func[:, z_index, j-1] .== a_grid[a_index])  #go to the policy function for generation j-1, go to 
-                #productivity state z, then find all the people from various inital asset holdings with current productivity z that are suppose 
-                #to have asset holding a' tomorrow
-                for zp = 1:nz  #looping over productivity states for tomorrow z'
-                    mu1[a_index, z_index, j] = sum(mu1[index, zp, j-1] * markov[zp, z_index]) #to populate the mass at (a, z, j) today, we 
-                    #look at last period's distribution. For each mass of people with a today that should hold a' tomorrow, we find the probability they will hold a'
-                    #in the high productivity state tomorrow z' then we multiply the mass by π_j'j and populate our mass for generation j. To be clear, generation j 
-                    #represents tomorrow while generation j-1 is today.
-                end
+    @unpack mu, mu_dist, mu1 = mass
+    
+    mu_dist[1, 1, 1] = 0.2037  #initial mass of high productivity people
+    mu_dist[1, 2, 1] = 0.7963   #initial mass of low productivity people
+    for j = 2:prim.N  #loopig over the ages
+        for ap = 1:prim.na  #looping over assets tomorrow
+            for z = 1:2  #looping over z from today
+                d = findall(x->x == a_grid[ap], res.pol_func[:, z, j-1])
+                    for i = 1:length(d) #loop over the indices you find for a specific z
+                        for zp = 1:2  #loop over zp 
+                            mu_dist[ap, zp, j] = mu_dist[ap, zp, j] + mu_dist[d[i], z, j-1] .* markov[z, zp]
+                        end
+                    end
             end
         end
     end
-    mass.mu_dist = mu1
-    return mu1
-    #now we need to weigh each generation by the relative size of their cohort
+
+    #The final step is weighting each generation according to the relative sizes calculated by mu.
+    for i = 1:prim.N
+        mu1[:, :, i] = mu_dist[:, :, i] .* mu[i]
+    end
+    res.mu_dist = mu_dist  #updating the unweighted distribution
+    res.mu1 = mu1  #updating the weighted distribution 
 end
 
 
